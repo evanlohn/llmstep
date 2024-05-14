@@ -16,6 +16,8 @@ open Lean
 
 /- Calls a `suggest.py` python script with the given prefix and pretty-printed goal. -/
 def runSuggestAux (path goal pre ctx: String) : IO (List String) := do
+  dbg_trace f!"hi"
+  dbg_trace f!"{goal}"
   let s ← IO.Process.run { cmd := "python3", args := #[path, goal, pre, ctx] }
   return s.splitOn "[SUGGESTION]"
 

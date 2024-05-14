@@ -5,13 +5,15 @@ import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 
+import numpy as np
+
 
 def load_hf(hf_model):
     print("Loading model...")
     if 'wellecks/llmstep-mathlib4-pythia' in hf_model:
         model = transformers.GPTNeoXForCausalLM.from_pretrained(
-            hf_model,
-            torch_dtype=torch.float16
+            hf_model
+            #torch_dtype=torch.float16
         )
         tokenizer = transformers.GPTNeoXTokenizerFast.from_pretrained(hf_model)
     else:
@@ -35,6 +37,9 @@ def hf_generate(
 ):
     input_ids = tokenizer.encode(prompt, return_tensors='pt').to(model.device)
     texts = []
+    scores = []
+    # see https://github.com/huggingface/transformers/blob/e0c3cee17085914bbe505c159beeb8ae39bc37dd/src/transformers/generation/utils.py#L2425
+    # for the actual sampling code + output type (transformers.generation.utils.GenerateDecoderOnlyOutput)
     for temp in temperatures:
         out = model.generate(
             input_ids,
@@ -42,15 +47,38 @@ def hf_generate(
             do_sample=temp > 0,
             temperature=temp,
             pad_token_id=tokenizer.eos_token_id,
-            num_return_sequences=num_samples if temp > 0 else 1
+            num_return_sequences=num_samples if temp > 0 else 1,
+            output_scores=True,
+            return_dict_in_generate=True
         )
+        # a tuple with num_output_tokens elements. Each element is a
+        # num_sequences x vocab size tensor full of log probabilities.
+        transition_scores = model.compute_transition_scores(
+            out.sequences, out.scores, normalize_logits=True)
+        out = out.sequences
         output_tokens = out[:, input_ids.shape[1]:]
+        #print('input shape', input_ids.shape)
+        #print('output shape', output_tokens.shape)
+        #print('scores shape', type(transition_scores), transition_scores.shape)
+        np_scores = transition_scores.numpy()
+        output_length = np.sum(np_scores > -10e8, axis=1)
+        #print('outp lengths:', output_length)
+        #print(transition_scores[0,:])
         texts.extend(tokenizer.batch_decode(
             output_tokens,
             skip_special_tokens=True
         ))
-    texts = list(set(texts))
-    return texts
+
+        scores.extend([np.sum(scr[:lng])/lng for scr, lng in zip(np_scores, output_length) if lng > 0])
+
+    # useful example: https://discuss.huggingface.co/t/announcement-generation-get-probabilities-for-generated-output/30075
+    out_dct = {}
+    for seq, score in zip(texts, scores):
+        #print('score: ', score, '>>>>', seq)
+        out_dct[seq] = score # deduping + score association without worrying about floating point comparison
+    #texts = list(set(texts))
+    #return texts
+    return list(out_dct.items())
 
 
 class LLMStepServer(HTTPServer):
@@ -68,6 +96,7 @@ class LLMStepServer(HTTPServer):
 
 class LLMStepRequestHandler(BaseHTTPRequestHandler):
     def process_request(self, tactic_state, prefix):
+        print('hello')
         prompt = self.server.config['LLMSTEP_PROMPT'](tactic_state, prefix)
         texts = self.server.generate_function(
             model=self.server.model,
@@ -76,11 +105,13 @@ class LLMStepRequestHandler(BaseHTTPRequestHandler):
             temperatures=self.server.config['LLMSTEP_TEMPERATURES'],
             num_samples=self.server.config['LLMSTEP_NUM_SAMPLES']
         )
-        texts = [prefix + text for text in texts]
+        texts = [(prefix + text, score) for text, score in texts]
         response = {"suggestions": texts}
+        print(response)
         return response
 
     def do_POST(self):
+        print('sup')
         self.send_response(200)
         self.send_header('Content-type', 'application/json')
         self.end_headers()
@@ -94,6 +125,7 @@ class LLMStepRequestHandler(BaseHTTPRequestHandler):
             response = result
             self.wfile.write(json.dumps(response).encode('utf-8'))
         except Exception as e:
+            print('oops', str(e))
             error_response = {'error': str(e)}
             self.wfile.write(json.dumps(error_response).encode('utf-8'))
 
