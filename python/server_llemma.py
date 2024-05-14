@@ -107,7 +107,7 @@ class LLMStepRequestHandler(BaseHTTPRequestHandler):
         texts, scores = _unique_sorted(texts, scores)
         texts, scores = _filter(texts, scores)
 
-        response = {"suggestions": texts}
+        response = {"suggestions": [(text, score) for text, score in zip(texts, scores)]}
         return response
 
     def do_POST(self):
