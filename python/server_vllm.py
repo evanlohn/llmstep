@@ -52,7 +52,7 @@ def vllm_generate(
             scores.append(score)
 
     texts, scores = _unique_sorted(texts, scores)
-    return texts
+    return [(text, score) for text, score in zip(texts, scores)]
 
 
 if __name__ == '__main__':
